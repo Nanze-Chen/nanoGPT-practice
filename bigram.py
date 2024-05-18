@@ -5,9 +5,9 @@ from torch.nn import functional as F
 # hyperparameter
 batch_size = 32
 block_size = 8
-max_iters = 3000
+max_iters = 5000
 eval_interval = 300
-learning_rate = 1e-2
+learning_rate = 1e-3
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 eval_iters = 200
 n_embd = 32
@@ -57,6 +57,33 @@ def estimate_loss():
     model.train()
     return out
 
+class Head(nn.Module):
+    '''one head of self-attention'''
+    def __init__(self, head_size):
+        super().__init__()
+        self.head_size = head_size
+        self.key = nn.Linear(n_embd, head_size, bias=False)
+        self.query = nn.Linear(n_embd, head_size, bias=False)
+        self.value = nn.Linear(n_embd, head_size, bias=False)
+        self.register_buffer('tril', torch.tril(torch.ones(block_size,block_size)))
+
+    def forward(self, x):
+        B,T,C = x.shape     
+        # In Andrej Karpathy's code, he wrote the sizes of k and q are (B,T,C), and he use (C ** -0.5)
+        # to normalize wei. I think this could be problematic because the sizes of k and q are actually
+        # (B,T,head_size), and head_size is a passed-in parameter. Andrej Karpathy's way of writing this
+        # code will only be okay when head_size == C. Although this difference won't cause any bug, but 
+        # it is not aligned with the formula, so I will change it for now.
+        k = self.key(x)     #(B,T,head_size)
+        q = self.query(x)   #(B,T,head_size)
+        wei = q @ k.transpose(-2, -1) * (self.head_size ** -0.5) #(B,T,head_size) @ (B,head_size,T) --> ((B,T,T)
+        wei = wei.masked_fill(self.tril[:T, :T]==0, float('-inf'))  #change the upper triangle to -inf
+        wei = F.softmax(wei, dim=-1) 
+        # perform weighted aggregation of the value
+        v = self.value(x)
+        output = wei @ v
+        return output
+
 # super simple bigram model
 class BigramLanguageModel(nn.Module):
     def __init__(self):
@@ -64,6 +91,7 @@ class BigramLanguageModel(nn.Module):
         # each token directly reads off the logits for the next token from a lookup table
         self.token_embedding_table = nn.Embedding(vocab_size, n_embd)
         self.position_embedding_table = nn.Embedding(block_size, n_embd)
+        self.sa_head = Head(n_embd)     #self-attention head
         self.lm_head = nn.Linear(n_embd, vocab_size)
 
     def forward(self, idx, target=None):
@@ -71,8 +99,9 @@ class BigramLanguageModel(nn.Module):
         # idx and target are both (B, T) tensor of integers
         token_embd = self.token_embedding_table(idx) #the new shape will be (B, T, n_embd)
         pos_embd = self.position_embedding_table(torch.arange(T, device=device))   # (T, n_embd)
-        x = token_embd + pos_embd #(B,T,C)
-        logits = self.lm_head(x)            # (B,T,vocab_size)
+        x = token_embd + pos_embd           #(B,T,n_embd)
+        x = self.sa_head(x)                 #apply one head self-attention. (B,T,C)
+        logits = self.lm_head(x)            #(B,T,vocab_size)
 
         if target == None:
             loss = None
@@ -86,8 +115,10 @@ class BigramLanguageModel(nn.Module):
     def generate(self, idx, max_new_tokens):
         # idx is (B, T) array of indices in the current context
         for _ in range(max_new_tokens):
+            # crop idx to the last block-size tokens
+            idx_crop = idx[:, -block_size:]
             # get the prediction
-            logits, loss = self(idx)    #(B,T,C)
+            logits, loss = self(idx_crop)    #(B,T,C)
             # we only need to focus on the char at the last t since we are bigram
             focus = logits[:,-1,:]      #(B,C)
             # transform the prediction into probability distribution
@@ -122,4 +153,5 @@ for iter in range(max_iters):
 
 #generate Shakespeare
 context = torch.zeros((1,1), dtype=torch.long, device=device)
+print('generating start----------------------------------')
 print(decode(model.generate(context, max_new_tokens=500)[0].tolist()))

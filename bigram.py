@@ -10,6 +10,7 @@ eval_interval = 300
 learning_rate = 1e-2
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 eval_iters = 200
+n_embd = 32
 
 # wget https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt
 torch.manual_seed(1337)
@@ -58,15 +59,21 @@ def estimate_loss():
 
 # super simple bigram model
 class BigramLanguageModel(nn.Module):
-    def __init__(self, vocab_size):
+    def __init__(self):
         super().__init__()
         # each token directly reads off the logits for the next token from a lookup table
-        self.token_embedding_table = nn.Embedding(vocab_size, vocab_size)
+        self.token_embedding_table = nn.Embedding(vocab_size, n_embd)
+        self.position_embedding_table = nn.Embedding(block_size, n_embd)
+        self.lm_head = nn.Linear(n_embd, vocab_size)
 
     def forward(self, idx, target=None):
-
+        B, T = idx.shape
         # idx and target are both (B, T) tensor of integers
-        logits = self.token_embedding_table(idx) #the new shape will be (B, T, vocab_size)
+        token_embd = self.token_embedding_table(idx) #the new shape will be (B, T, n_embd)
+        pos_embd = self.position_embedding_table(torch.arange(T, device=device))   # (T, n_embd)
+        x = token_embd + pos_embd #(B,T,C)
+        logits = self.lm_head(x)            # (B,T,vocab_size)
+
         if target == None:
             loss = None
         else:
@@ -92,7 +99,7 @@ class BigramLanguageModel(nn.Module):
         return idx
     
 
-model = BigramLanguageModel(vocab_size)
+model = BigramLanguageModel()
 model.to(device)
 
 #create a PyTorch optimizor

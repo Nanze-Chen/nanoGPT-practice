@@ -3,14 +3,17 @@ import torch.nn as nn
 from torch.nn import functional as F
 
 # hyperparameter
-batch_size = 32
-block_size = 8
+batch_size = 64
+block_size = 256
 max_iters = 5000
-eval_interval = 300
-learning_rate = 1e-3
+eval_interval = 500
+learning_rate = 3e-4
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 eval_iters = 200
-n_embd = 32
+n_embd = 384
+n_head = 6
+n_layers = 6    #the number of transformer blocks we want in our model
+dropout = 0.2
 
 # wget https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt
 torch.manual_seed(1337)
@@ -66,6 +69,7 @@ class Head(nn.Module):
         self.query = nn.Linear(n_embd, head_size, bias=False)
         self.value = nn.Linear(n_embd, head_size, bias=False)
         self.register_buffer('tril', torch.tril(torch.ones(block_size,block_size)))
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
         B,T,C = x.shape     
@@ -79,6 +83,7 @@ class Head(nn.Module):
         wei = q @ k.transpose(-2, -1) * (self.head_size ** -0.5) #(B,T,head_size) @ (B,head_size,T) --> ((B,T,T)
         wei = wei.masked_fill(self.tril[:T, :T]==0, float('-inf'))  #change the upper triangle to -inf
         wei = F.softmax(wei, dim=-1) 
+        wei = self.dropout(wei)
         # perform weighted aggregation of the value
         v = self.value(x)
         output = wei @ v
@@ -89,10 +94,11 @@ class MultiHeadAttention(nn.Module):
         super().__init__()
         self.heads = nn.ModuleList([Head(head_size) for _ in range(head_num)])
         self.proj = nn.Linear(n_embd, n_embd)
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
         out = torch.cat([head(x) for head in self.heads], dim=-1)
-        out = self.proj(out)
+        out = self.dropout(self.proj(out))
         return out
 
 class FeedForward(nn.Module):
@@ -102,16 +108,17 @@ class FeedForward(nn.Module):
             nn.Linear(in_size, out_size*4),
             nn.ReLU(),
             nn.Linear(out_size*4, out_size),
+            nn.Dropout(dropout)
         )
     
     def forward(self,x):
         return self.net(x)
     
 class Block(nn.Module):
-    def __init__(self, n_embd, n_heads):
+    def __init__(self, n_embd, n_head):
         super().__init__()
-        self.head_size = n_embd // n_heads
-        self.sa_head = MultiHeadAttention(n_heads, self.head_size)
+        self.head_size = n_embd // n_head
+        self.sa_head = MultiHeadAttention(n_head, self.head_size)
         self.ffwd = FeedForward(n_embd, n_embd)
         self.ln1 = nn.LayerNorm(n_embd)
         self.ln2 = nn.LayerNorm(n_embd)
@@ -128,12 +135,8 @@ class BigramLanguageModel(nn.Module):
         # each token directly reads off the logits for the next token from a lookup table
         self.token_embedding_table = nn.Embedding(vocab_size, n_embd)
         self.position_embedding_table = nn.Embedding(block_size, n_embd)
-        self.blocks = nn.Sequential(
-            Block(n_embd, 4),
-            Block(n_embd, 4),
-            Block(n_embd, 4),
-            nn.LayerNorm(n_embd),
-        )
+        self.blocks = nn.Sequential(*[Block(n_embd, n_head) for _ in range(n_layers)])
+        self.ln_f = nn.LayerNorm(n_embd)
         self.lm_head = nn.Linear(n_embd, vocab_size)
 
     def forward(self, idx, target=None):
@@ -142,7 +145,8 @@ class BigramLanguageModel(nn.Module):
         token_embd = self.token_embedding_table(idx) #the new shape will be (B, T, n_embd)
         pos_embd = self.position_embedding_table(torch.arange(T, device=device))   # (T, n_embd)
         x = token_embd + pos_embd           #(B,T,n_embd)
-        x = self.blocks(x)                 #(B,T,C)
+        x = self.blocks(x)                  #(B,T,C)
+        x = self.ln_f(x)                    #(B,T,C)
         logits = self.lm_head(x)            #(B,T,vocab_size)
 
         if target == None:

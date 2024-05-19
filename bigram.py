@@ -113,10 +113,12 @@ class Block(nn.Module):
         self.head_size = n_embd // n_heads
         self.sa_head = MultiHeadAttention(n_heads, self.head_size)
         self.ffwd = FeedForward(n_embd, n_embd)
+        self.ln1 = nn.LayerNorm(n_embd)
+        self.ln2 = nn.LayerNorm(n_embd)
     
     def forward(self, x):
-        x = x + self.sa_head(x)
-        x = x + self.ffwd(x)
+        x = x + self.sa_head(self.ln1(x))
+        x = x + self.ffwd(self.ln2(x))
         return x
 
 # super simple bigram model
